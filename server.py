@@ -1,8 +1,8 @@
-from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 from flask import Flask, request, jsonify
 from pydantic import BaseModel
 from pydantic_ai import Agent
+import asyncio
 
 
 class ApiRequest(BaseModel):
@@ -41,11 +41,11 @@ def get_user_message_builder() -> Callable[[str], str]:
 
 
 @app.route("/api", methods=["POST"])
-def handle_request():
+async def handle_request():
     data = ApiRequest(**request.get_json())
 
-    def do_once():
-        response = _get_agent_response(data.chat_message)
+    async def do_once():
+        response = await _get_agent_response(data.chat_message)
 
         # take only the first word:
         response = response.split()[0].lower()
@@ -53,31 +53,31 @@ def handle_request():
         return jsonify({"result": response})
 
     try:
-        return do_once()
+        return await do_once()
     except Exception as e:
         # try one more time...
         try:
-            return do_once()
+            return await do_once()
         except Exception as e:
             # if it fails again, return the error
             return jsonify({"result": "error", "error": str(e)}), 400
 
 
-def _get_agent_response(chat_message: str, timeout_seconds: int = 4) -> str:
+async def _get_agent_response(chat_message: str, timeout_seconds: int = 4) -> str:
     agent = get_agent_provider()()
 
     user_message_builder = get_user_message_builder()
     message = user_message_builder(chat_message)
 
-    def run_agent():
-        return agent.run_sync(message).data
+    async def run_agent():
+        response = await agent.run(message)
+        return response.data
 
-    with ThreadPoolExecutor() as executor:
-        future = executor.submit(run_agent)
-        try:
-            return future.result(timeout=timeout_seconds)
-        except TimeoutError:
-            raise TimeoutError(f"Request timed out after {timeout_seconds} seconds")
+    try:
+        result = await asyncio.wait_for(run_agent(), timeout=timeout_seconds)
+        return result
+    except asyncio.TimeoutError:
+        raise TimeoutError("Agent response timed out.")
 
 
 def run_server(
